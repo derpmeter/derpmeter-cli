@@ -138,13 +138,16 @@ test("agent/model selection, opt-in session link, change/cancel receipts, /derp 
       JSON.stringify({
         session_id: "secret-session",
         model: { id: "claude-opus-5-5" },
+        effort: { level: "xhigh" },
         cwd: "/secret",
       }),
     );
     const observed = JSON.parse(
       await readFile(join(root, "state", "observed.json"), "utf8"),
     );
+    assert.equal(observed["claude-code"].effort, "xhigh");
     assert.deepEqual(Object.keys(observed["claude-code"]).sort(), [
+      "effort",
       "model",
       "seenAt",
     ]);
@@ -304,6 +307,8 @@ test("first vote self-enrolls a CLI token; logout revokes it on the server", asy
       "POST /api/votes",
       "POST /api/clients",
       "POST /api/votes",
+      // After an accepted vote: cache the cooldown for the statusline nudge.
+      "GET /api/votes/status",
     ]);
     assert.equal(seen[0].text, JSON.stringify({ channel: "cli" }));
     assert.equal(

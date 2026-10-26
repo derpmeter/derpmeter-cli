@@ -149,6 +149,7 @@ test("preferences are validated and names prefer the cached catalog", () => {
       fields: ["model"],
       color: false,
       modelName: "auto",
+      nudge: true,
     },
   );
   assert.equal(prettyModel("claude-haiku-5-5"), "Haiku 5.5");
@@ -221,6 +222,7 @@ test("statusline-config saves preferences and the statusline uses them", async (
       fields: null,
       color: true,
       modelName: "auto",
+      nudge: true,
     });
     assert.equal(config.sessionLink, false, "other settings kept");
     const line = await run(
@@ -233,7 +235,8 @@ test("statusline-config saves preferences and the statusline uses them", async (
     );
     assert.equal(
       line.out.trim(),
-      "Opus 5.5 \x1b[31m▕███████░░░▏\x1b[0m \x1b[31m72\x1b[0m",
+      // No vote yet and no /derp command installed: the CLI nudge.
+      "Opus 5.5 \x1b[31m▕███████░░░▏\x1b[0m \x1b[31m72\x1b[0m · 🗳 vote: derp vote",
     );
     await run(["statusline-config", "--reset"], env);
     const reset = await run(
@@ -341,4 +344,80 @@ test("snapshot validation: blended score optional but strict when present", asyn
     }),
   );
   assert.ok(!snapshotValid({ ...base, score: { agents: "x" } }));
+});
+
+test("vote nudge shows while this model can vote and hides after your vote", () => {
+  const nudge = "🗳 vote: /derp";
+  const base = renderIndex(cache, "claude-opus-5-5");
+  assert.equal(render(undefined, { nudge }), `${base} · ${nudge}`);
+  assert.equal(render(undefined), base, "no nudge text, no nudge");
+  // Your own vote for this model hides it for the cached cooldown.
+  const voted = (at, model = "claude-opus-5-5", cooldownSeconds = 7200) =>
+    render(
+      { style: "minimal" },
+      {
+        nudge,
+        voteStatus: { cooldownSeconds, agents: [] },
+        localVotes: [{ agent: "claude-code", model, key: "k", at }],
+      },
+    );
+  assert.equal(voted(now - 3600_000), "Derp 72");
+  assert.equal(voted(now - 7300_000), `Derp 72 · ${nudge}`);
+  assert.equal(voted(now - 60_000, "claude-fable-5-1"), `Derp 72 · ${nudge}`);
+  // Unknown cooldown: the server default of one hour.
+  assert.equal(
+    render(
+      { style: "minimal" },
+      {
+        nudge,
+        localVotes: [
+          {
+            agent: "claude-code",
+            model: "claude-opus-5-5",
+            at: now - 1800_000,
+          },
+        ],
+      },
+    ),
+    "Derp 72",
+  );
+  // Server status says the model is cooling down.
+  assert.equal(
+    render(
+      { style: "minimal" },
+      {
+        nudge,
+        voteStatus: {
+          agents: [
+            {
+              agent: "claude-code",
+              nextVoteAt: null,
+              models: [
+                {
+                  model: "claude-opus-5-5",
+                  nextVoteAt: new Date(now + 60_000).toISOString(),
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ),
+    "Derp 72",
+  );
+  assert.equal(
+    render({ style: "minimal", nudge: false }, { nudge }),
+    "Derp 72",
+  );
+  // The "vote" field already says it; no duplicate.
+  assert.equal(
+    render(
+      { style: "minimal", fields: ["score", "vote"] },
+      {
+        nudge,
+        voteStatus: { agents: [{ agent: "claude-code", nextVoteAt: null }] },
+      },
+    ),
+    "Derp 72 · vote now",
+  );
 });

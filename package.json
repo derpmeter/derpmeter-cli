@@ -1,6 +1,6 @@
 {
   "name": "derpmeter",
-  "version": "0.5.9",
+  "version": "0.5.10",
   "description": "DerpMeter CLI (derp), Claude Code statusline and MCP adapter. Privacy-first.",
   "homepage": "https://derpmeter.com/apps",
   "keywords": [

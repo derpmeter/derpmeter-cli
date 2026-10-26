@@ -13,6 +13,7 @@ import {
   safeWrite,
   saveConfig,
   extractModel,
+  extractEffort,
   cachedIndex,
   refreshIndex,
   refreshCatalog,
@@ -48,6 +49,10 @@ import {
   saveReceipt,
   latestReceipt,
   dropReceipt,
+  recordLocalVote,
+  readLocalVotes,
+  dropLocalVote,
+  commandPath,
   installCommand,
   uninstallCommand,
 } from "../lib/agents.mjs";
@@ -58,7 +63,7 @@ import {
   updateCommand,
   updateState,
 } from "../lib/update.mjs";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 const VERSION = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ).version;
@@ -115,6 +120,9 @@ async function voteWait(c) {
     // Cached for the statusline's optional "vote" field (computed locally).
     await safeWrite(join(dataDir(), "vote-status.json"), {
       fetchedAt: Date.now(),
+      cooldownSeconds: Number.isFinite(d.cooldownSeconds)
+        ? d.cooldownSeconds
+        : null,
       agents: d.agents.map((a) => ({
         agent: a.agent,
         nextVoteAt: a.nextVoteAt ?? null,
@@ -213,7 +221,7 @@ async function main() {
       if (
         on &&
         !(await confirm(
-          "Opt in? The statusline will keep your current Claude Code model locally, and votes within 15 minutes are marked session-linked. No session ID, prompt, path or transcript is stored or sent.",
+          "Opt in? The statusline will keep your current Claude Code model and effort level locally, and votes within 15 minutes are marked session-linked. No session ID, prompt, path or transcript is stored or sent.",
         ))
       )
         return;
@@ -245,7 +253,9 @@ async function main() {
     const model = extractModel(input);
     // Opt-in only; failures must never break the statusline.
     if (c.sessionLink && model)
-      await recordObservation("claude-code", model).catch(() => {});
+      await recordObservation("claude-code", model, extractEffort(input)).catch(
+        () => {},
+      );
     const prior = await previousStatusline();
     if (prior) {
       const output = spawnSync(prior, {
@@ -271,6 +281,8 @@ async function main() {
           join(dataDir(), "vote-status.json"),
           null,
         ).catch(() => null),
+        localVotes: await readLocalVotes(),
+        nudge: voteNudge(),
       }) + statuslineUpdate(await readUpdateCache()),
     );
     return;
@@ -296,6 +308,11 @@ async function main() {
       if (!["on", "off"].includes(v)) throw new Error("Use --color on|off.");
       prefs = { ...prefs, color: v === "on" };
     }
+    if (args.includes("--nudge")) {
+      const v = option("--nudge");
+      if (!["on", "off"].includes(v)) throw new Error("Use --nudge on|off.");
+      prefs = { ...prefs, nudge: v === "on" };
+    }
     if (args.includes("--model-name")) {
       const v = option("--model-name");
       if (!["auto", "id", "name"].includes(v))
@@ -308,6 +325,7 @@ async function main() {
       "--show",
       "--color",
       "--model-name",
+      "--nudge",
     ].some((f) => args.includes(f));
     if (changed)
       await saveConfig({
@@ -326,7 +344,7 @@ async function main() {
       ).catch(() => null),
     };
     console.log(
-      `${changed ? "Saved. " : ""}Current: style=${prefs.style} show=${(prefs.fields || STYLES[prefs.style].fields).join(",")} color=${prefs.color ? "on" : "off"} model-name=${prefs.modelName}`,
+      `${changed ? "Saved. " : ""}Current: style=${prefs.style} show=${(prefs.fields || STYLES[prefs.style].fields).join(",")} color=${prefs.color ? "on" : "off"} model-name=${prefs.modelName} nudge=${prefs.nudge ? "on" : "off"}`,
     );
     console.log(`  → ${renderStatusline({ ...sample, prefs })}\n`);
     console.log("Styles (derp statusline-config --style <name>):");
@@ -335,7 +353,7 @@ async function main() {
         `  ${name.padEnd(8)} ${renderStatusline({ ...sample, prefs: { ...prefs, style: name, fields: null } })}    (${def.about})`,
       );
     console.log(
-      `\nFields (--show a,b,c): ${FIELDS.join(", ")}\nAlso: --color on|off, --model-name auto|id|name, --reset. The "vote" field uses the time cached by derp status.`,
+      `\nFields (--show a,b,c): ${FIELDS.join(", ")}\nAlso: --color on|off, --model-name auto|id|name, --nudge on|off, --reset. The "vote" field and the nudge use your own recent votes and the time cached by derp status.`,
     );
     return;
   }
@@ -433,8 +451,10 @@ async function main() {
         body: JSON.stringify(body),
       });
       const result = await readBody(r);
-      if (r.status === 410 || (command === "cancel" && r.ok))
+      if (r.status === 410 || (command === "cancel" && r.ok)) {
         await dropReceipt(receipt.key);
+        await dropLocalVote(receipt.key).catch(() => {});
+      }
       if (!r.ok)
         throw new Error(
           `${result.error || "Request failed"} (HTTP ${r.status}).`,
@@ -581,7 +601,14 @@ async function main() {
           `${result.error || "Vote failed"} (HTTP ${r.status}); pending vote retained.`,
         );
       await unlink(pendingPath);
-      if (!result.demo) await saveReceipt(origin, agent, key);
+      if (!result.demo) {
+        await saveReceipt(origin, agent, key);
+        // Hides the statusline vote nudge until this model's cooldown ends,
+        // then caches the server's own timing (best effort).
+        await recordLocalVote(agent, body.model, key).catch(() => {});
+        const fresh = await config();
+        if (fresh.token) await voteWait(fresh).catch(() => null);
+      }
       console.log(
         result.demo
           ? "DEMO: preview only; no vote stored."
@@ -603,9 +630,19 @@ async function main() {
     return;
   }
   console.log(
-    "DerpMeter CLI (derp) — How derpy is your AI today?\nvote smart|meh|dumb [--agent claude-code|codex|antigravity] [--model <id>] [--reason <reason>]\nchange smart|meh|dumb [--agent <id>] | cancel [--agent <id>]\ninstall-command|uninstall-command [--agent claude-code|codex] | privacy session on|off | version | update\nstatusline-config [--style classic|compact|minimal|bar|mood] [--show <fields>] [--color on|off] [--model-name auto|id|name] [--reset]\nstatus | doctor\nauth --token-stdin | logout\nprivacy | install-statusline | uninstall-statusline | discard-pending\nstatusline (Claude Code JSON stdin; local only)\nmcp [--host claude-code|codex|other] (MCP stdio server)",
+    "DerpMeter CLI (derp) — How derpy is your AI today?\nvote smart|meh|dumb [--agent claude-code|codex|antigravity] [--model <id>] [--reason <reason>]\nchange smart|meh|dumb [--agent <id>] | cancel [--agent <id>]\ninstall-command|uninstall-command [--agent claude-code|codex] | privacy session on|off | version | update\nstatusline-config [--style classic|compact|minimal|bar|mood] [--show <fields>] [--color on|off] [--model-name auto|id|name] [--nudge on|off] [--reset]\nstatus | doctor\nauth --token-stdin | logout\nprivacy | install-statusline | uninstall-statusline | discard-pending\nstatusline (Claude Code JSON stdin; local only)\nmcp [--host claude-code|codex|other] (MCP stdio server)",
   );
   if (command && !["help", "--help"].includes(command)) process.exitCode = 1;
+}
+// Statusline vote nudge: the /derp slash command when it is installed.
+function voteNudge() {
+  try {
+    return existsSync(commandPath("claude-code"))
+      ? "🗳 vote: /derp"
+      : "🗳 vote: derp vote";
+  } catch {
+    return "🗳 vote: derp vote";
+  }
 }
 // Statusline: cache only (no network), a short hint while an update waits.
 function statuslineUpdate(cache) {
