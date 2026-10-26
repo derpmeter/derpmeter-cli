@@ -1,0 +1,31 @@
+{
+  "name": "derpmeter",
+  "version": "0.5.9",
+  "description": "DerpMeter CLI (derp), Claude Code statusline and MCP adapter. Privacy-first.",
+  "homepage": "https://derpmeter.com/apps",
+  "keywords": [
+    "derpmeter",
+    "claude-code",
+    "codex",
+    "statusline",
+    "mcp",
+    "cli"
+  ],
+  "type": "module",
+  "bin": {
+    "derp": "bin/derp.mjs"
+  },
+  "engines": {
+    "node": ">=22.13"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}
