@@ -27,6 +27,7 @@ import {
   installStatusline,
   uninstallStatusline,
   previousStatusline,
+  runPreviousStatusline,
 } from "../lib/settings.mjs";
 import { serve, MCP_HOSTS } from "../lib/mcp.mjs";
 import { robustFetch, readBody } from "../lib/net.mjs";
@@ -56,6 +57,14 @@ import {
   installCommand,
   uninstallCommand,
 } from "../lib/agents.mjs";
+import {
+  QUESTIONS,
+  askFollowUp,
+  followUpHint,
+  followUpQuestions,
+  parseDetailArgs,
+  sendDetails,
+} from "../lib/details.mjs";
 import {
   checkForUpdate,
   maybeNotify,
@@ -248,6 +257,10 @@ async function main() {
     return;
   }
   if (command === "statusline") {
+    // Another tool's statusline can wrap derp while derp still runs that tool
+    // as its previous statusline; each would start the other forever. A derp
+    // started from inside derp's own previous statusline prints nothing.
+    if (process.env.DERPMETER_IN_STATUSLINE === "1") return;
     const raw = await stdin();
     const input = JSON.parse(raw);
     const model = extractModel(input);
@@ -258,16 +271,8 @@ async function main() {
       );
     const prior = await previousStatusline();
     if (prior) {
-      const output = spawnSync(prior, {
-        shell: true,
-        input: raw,
-        encoding: "utf8",
-        timeout: 1000,
-        maxBuffer: 65536,
-        windowsHide: true,
-      });
-      if (output.stdout?.trim())
-        process.stdout.write(output.stdout.trimEnd() + "\n");
+      const output = await runPreviousStatusline(prior, raw);
+      if (output.trim()) process.stdout.write(output.trimEnd() + "\n");
     }
     console.log(
       renderStatusline({
@@ -342,6 +347,7 @@ async function main() {
         join(dataDir(), "vote-status.json"),
         null,
       ).catch(() => null),
+      localVotes: await readLocalVotes(),
     };
     console.log(
       `${changed ? "Saved. " : ""}Current: style=${prefs.style} show=${(prefs.fields || STYLES[prefs.style].fields).join(",")} color=${prefs.color ? "on" : "off"} model-name=${prefs.modelName} nudge=${prefs.nudge ? "on" : "off"}`,
@@ -353,7 +359,7 @@ async function main() {
         `  ${name.padEnd(8)} ${renderStatusline({ ...sample, prefs: { ...prefs, style: name, fields: null } })}    (${def.about})`,
       );
     console.log(
-      `\nFields (--show a,b,c): ${FIELDS.join(", ")}\nAlso: --color on|off, --model-name auto|id|name, --nudge on|off, --reset. The "vote" field and the nudge use your own recent votes and the time cached by derp status.`,
+      `\nFields (--show a,b,c): ${FIELDS.join(", ")}\nAlso: --color on|off, --model-name auto|id|name, --nudge on|off, --reset. The "vote" field and the nudge use your own recent votes and the time cached by derp status. The score shows after you vote for the current model and hides again once you can vote (Derp ?).`,
     );
     return;
   }
@@ -513,8 +519,8 @@ async function main() {
     await serve(c, { host });
     return;
   }
-  if (command === "vote")
-    return withVoteLock(async () => {
+  if (command === "vote") {
+    const voted = await withVoteLock(async () => {
       if (!Object.hasOwn(SCORES, args[1]))
         throw new Error(
           "Use vote smart|meh|dumb [--agent <id>] [--model <id>] [--reason <reason>].",
@@ -602,7 +608,7 @@ async function main() {
         );
       await unlink(pendingPath);
       if (!result.demo) {
-        await saveReceipt(origin, agent, key);
+        await saveReceipt(origin, agent, key, Date.now(), body.score);
         // Hides the statusline vote nudge until this model's cooldown ends,
         // then caches the server's own timing (best effort).
         await recordLocalVote(agent, body.model, key).catch(() => {});
@@ -614,8 +620,79 @@ async function main() {
           ? "DEMO: preview only; no vote stored."
           : `Vote accepted · ${result.evidenceKind || "public"}${result.replayed ? " · previous submission recovered" : ""}; feedback is self-reported, never objectively verified.`,
       );
-      return;
+      if (result.demo || args.includes("--no-questions")) return null;
+      return { origin, agent, key, score: body.score };
     });
+    // Optional follow-up, after the lock is released (Ctrl-C here leaves no
+    // stale lock): asked in a terminal, listed otherwise (the /derp command
+    // asks the user). Never blocks or undoes the vote.
+    if (!voted) return;
+    const ids = followUpQuestions(
+      voted.score,
+      Math.floor(Math.random() * 1000),
+    );
+    if (!process.stdin.isTTY || !process.stderr.isTTY) {
+      console.log(followUpHint(ids));
+      return;
+    }
+    const rl = createInterface({
+      input: process.stdin,
+      output: process.stderr,
+    });
+    let answers;
+    try {
+      answers = await askFollowUp(
+        ids,
+        (q) => rl.question(q),
+        (t) => process.stderr.write(t),
+      );
+    } finally {
+      rl.close();
+    }
+    if (!Object.keys(answers).length) return;
+    try {
+      await sendDetails({ ...voted, token: (await config()).token, answers });
+      console.log("Thanks. That helps.");
+    } catch (e) {
+      console.error(
+        `Your vote counts; the answers were not saved: ${e.message}`,
+      );
+    }
+    return;
+  }
+  if (command === "details") {
+    // Optional follow-up answers for your latest vote on this agent (24h).
+    const agent = agentArg(option("--agent"));
+    if (!AGENTS.includes(agent)) throw new Error(`Use --agent ${AGENT_USAGE}.`);
+    if (!c.token)
+      throw new Error("Installation token missing. Vote first with derp vote.");
+    const origin = endpoint(c.endpoint);
+    const receipt = await latestReceipt(origin, agent);
+    if (!receipt)
+      throw new Error(
+        `No ${agent} vote from this installation in the last 24 hours.`,
+      );
+    const answers = parseDetailArgs(args, receipt.score);
+    if (!Object.keys(answers).length)
+      throw new Error(
+        `Answer at least one: ${Object.values(QUESTIONS)
+          .map((q) => q.flag)
+          .join(" ")}.`,
+      );
+    const result = await sendDetails({
+      origin,
+      token: c.token,
+      agent,
+      key: receipt.key,
+      answers,
+    });
+    console.log(
+      result.demo
+        ? "DEMO: preview only; nothing saved."
+        : "Thanks. That helps.",
+    );
+    return;
+  }
   if (command === "discard-pending") {
     if (
       await confirm(
@@ -630,7 +707,7 @@ async function main() {
     return;
   }
   console.log(
-    "DerpMeter CLI (derp) — How derpy is your AI today?\nvote smart|meh|dumb [--agent claude-code|codex|antigravity] [--model <id>] [--reason <reason>]\nchange smart|meh|dumb [--agent <id>] | cancel [--agent <id>]\ninstall-command|uninstall-command [--agent claude-code|codex] | privacy session on|off | version | update\nstatusline-config [--style classic|compact|minimal|bar|mood] [--show <fields>] [--color on|off] [--model-name auto|id|name] [--nudge on|off] [--reset]\nstatus | doctor\nauth --token-stdin | logout\nprivacy | install-statusline | uninstall-statusline | discard-pending\nstatusline (Claude Code JSON stdin; local only)\nmcp [--host claude-code|codex|other] (MCP stdio server)",
+    "DerpMeter CLI (derp) — How derpy is your AI today?\nvote smart|meh|dumb [--agent claude-code|codex|antigravity] [--model <id>] [--reason <reason>] [--no-questions]\ndetails [--agent <id>] [--vs-usual <v>] [--task <v>] [--session <v>] [--languages <a,b>] [--went-well <a,b>] [--frequency <v>]\nchange smart|meh|dumb [--agent <id>] | cancel [--agent <id>]\ninstall-command|uninstall-command [--agent claude-code|codex] | privacy session on|off | version | update\nstatusline-config [--style classic|compact|minimal|bar|mood] [--show <fields>] [--color on|off] [--model-name auto|id|name] [--nudge on|off] [--reset]\nstatus | doctor\nauth --token-stdin | logout\nprivacy | install-statusline | uninstall-statusline | discard-pending\nstatusline (Claude Code JSON stdin; local only)\nmcp [--host claude-code|codex|other] (MCP stdio server)",
   );
   if (command && !["help", "--help"].includes(command)) process.exitCode = 1;
 }

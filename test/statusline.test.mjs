@@ -29,8 +29,19 @@ const cache = {
     ],
   },
 };
+// Your own vote a minute ago: the score is revealed for this model.
+const votedFor = (model) => [
+  { agent: "claude-code", model, key: "k", at: now - 60_000 },
+];
 const render = (prefs, extra = {}) =>
-  renderStatusline({ cache, model: "claude-opus-5-5", prefs, now, ...extra });
+  renderStatusline({
+    cache,
+    model: "claude-opus-5-5",
+    prefs,
+    now,
+    localVotes: votedFor("claude-opus-5-5"),
+    ...extra,
+  });
 test("default stays byte-identical to the original statusline", () => {
   assert.equal(render(undefined), renderIndex(cache, "claude-opus-5-5"));
   assert.equal(
@@ -58,6 +69,7 @@ test("styles, fields, readable names, color and vote countdown", () => {
       model: "claude-fable-5-1",
       prefs: { style: "mood" },
       now,
+      localVotes: votedFor("claude-fable-5-1"),
     }),
     "(•‿•) · Derp 20 · Fable 5.1", // mood has no flags field
   );
@@ -67,6 +79,7 @@ test("styles, fields, readable names, color and vote countdown", () => {
       model: "claude-fable-5-1",
       prefs: { style: "compact" },
       now,
+      localVotes: votedFor("claude-fable-5-1"),
     }),
     "Fable 5.1 · Derp 20 · low n",
   );
@@ -79,14 +92,18 @@ test("styles, fields, readable names, color and vote countdown", () => {
   const vote = (iso) =>
     render(
       { style: "minimal", fields: ["score", "vote"] },
-      { voteStatus: { agents: [{ agent: "claude-code", nextVoteAt: iso }] } },
+      {
+        voteStatus: { agents: [{ agent: "claude-code", nextVoteAt: iso }] },
+        localVotes: [],
+      },
     );
   assert.equal(
     vote(new Date(now + 37 * 60000).toISOString()),
     "Derp 72 · vote in 37m",
   );
-  assert.equal(vote(new Date(now - 1000).toISOString()), "Derp 72 · vote now");
-  assert.equal(vote(null), "Derp 72 · vote now");
+  // Once you can vote again the score hides until you do.
+  assert.equal(vote(new Date(now - 1000).toISOString()), "Derp ? · vote now");
+  assert.equal(vote(null), "Derp ? · vote now");
   // Per-model cooldown: only the current model's own wait counts.
   const perModel = (model) =>
     render(
@@ -106,14 +123,16 @@ test("styles, fields, readable names, color and vote countdown", () => {
             },
           ],
         },
+        localVotes: [],
       },
     );
   assert.equal(perModel("claude-opus-5-5"), "Derp 72 · vote in 12m");
-  assert.equal(perModel("claude-sonnet-5-5"), "Derp 72 · vote now");
+  // Your vote was for another model: this one can vote, so no score.
+  assert.equal(perModel("claude-sonnet-5-5"), "Derp ? · vote now");
   assert.equal(
-    render({ style: "minimal", fields: ["score", "vote"] }),
-    "Derp 72",
-    "no cached status: field omitted",
+    render({ style: "minimal", fields: ["score", "vote"] }, { localVotes: [] }),
+    "Derp ?",
+    "no cached status and no vote: field omitted, score hidden",
   );
   // No cache: stale and no score, never throws.
   assert.equal(
@@ -122,6 +141,7 @@ test("styles, fields, readable names, color and vote countdown", () => {
       model: undefined,
       prefs: { style: "compact" },
       now,
+      localVotes: votedFor(null),
     }),
     "Claude Code · Derp — · stale",
   );
@@ -132,6 +152,7 @@ test("styles, fields, readable names, color and vote countdown", () => {
       model: "/etc/passwd",
       prefs: { style: "compact" },
       now,
+      localVotes: votedFor(null),
     }),
     "Claude Code · Derp 72",
   );
@@ -200,7 +221,8 @@ test("statusline-config saves preferences and the statusline uses them", async (
     );
     const preview = await run(["statusline-config"], env);
     assert.equal(preview.code, 0);
-    assert.match(preview.out, /compact\s+Opus 5\.5 · Derp 72/);
+    // No vote yet: the preview keeps the score hidden too.
+    assert.match(preview.out, /compact\s+Opus 5\.5 · Derp \?/);
     assert.equal(
       (await run(["statusline-config", "--style", "fancy"], env)).code,
       1,
@@ -235,8 +257,29 @@ test("statusline-config saves preferences and the statusline uses them", async (
     );
     assert.equal(
       line.out.trim(),
-      // No vote yet and no /derp command installed: the CLI nudge.
-      "Opus 5.5 \x1b[31m▕███████░░░▏\x1b[0m \x1b[31m72\x1b[0m · 🗳 vote: derp vote",
+      // No vote yet: score hidden, and the CLI nudge (no /derp installed).
+      "Opus 5.5 \x1b[2m▕░░░░░░░░░░▏\x1b[0m \x1b[2m?\x1b[0m · 🗳 vote: derp vote",
+    );
+    // After your own vote for this model the score shows.
+    await writeFile(
+      join(env.DERPMETER_HOME, "local-votes.json"),
+      JSON.stringify([
+        {
+          agent: "claude-code",
+          model: "claude-opus-5-5",
+          key: "k",
+          at: Date.now() - 60_000,
+        },
+      ]),
+    );
+    const after = await run(
+      ["statusline"],
+      env,
+      JSON.stringify({ model: { id: "claude-opus-5-5" } }),
+    );
+    assert.equal(
+      after.out.trim(),
+      "Opus 5.5 \x1b[31m▕███████░░░▏\x1b[0m \x1b[31m72\x1b[0m",
     );
     await run(["statusline-config", "--reset"], env);
     const reset = await run(
@@ -287,7 +330,13 @@ test("blended Derp Score leads when the server sends it; model does not change i
     },
   };
   const at = (model, prefs) =>
-    renderStatusline({ cache: blended, model, prefs, now });
+    renderStatusline({
+      cache: blended,
+      model,
+      prefs,
+      now,
+      localVotes: votedFor(model ?? null),
+    });
   assert.equal(
     renderIndex({ ...blended, fetchedAt: Date.now() }, "claude-fable-5-1"),
     "claude-fable-5-1 | Derp 35.2/100 · votes 7 · Radar 685 · 7d · community",
@@ -316,6 +365,7 @@ test("blended Derp Score leads when the server sends it; model does not change i
       model: undefined,
       prefs: { style: "compact" },
       now,
+      localVotes: votedFor(null),
     }),
     "Claude Code · Derp 14 · low n",
   );
@@ -348,9 +398,17 @@ test("snapshot validation: blended score optional but strict when present", asyn
 
 test("vote nudge shows while this model can vote and hides after your vote", () => {
   const nudge = "🗳 vote: /derp";
-  const base = renderIndex(cache, "claude-opus-5-5");
-  assert.equal(render(undefined, { nudge }), `${base} · ${nudge}`);
-  assert.equal(render(undefined), base, "no nudge text, no nudge");
+  const hiddenBase =
+    "claude-opus-5-5 | Derp ? · shown after you vote · community";
+  assert.equal(
+    render(undefined, { nudge, localVotes: [] }),
+    `${hiddenBase} · ${nudge}`,
+  );
+  assert.equal(
+    render(undefined, { localVotes: [] }),
+    hiddenBase,
+    "no nudge text, no nudge",
+  );
   // Your own vote for this model hides it for the cached cooldown.
   const voted = (at, model = "claude-opus-5-5", cooldownSeconds = 7200) =>
     render(
@@ -362,8 +420,8 @@ test("vote nudge shows while this model can vote and hides after your vote", () 
       },
     );
   assert.equal(voted(now - 3600_000), "Derp 72");
-  assert.equal(voted(now - 7300_000), `Derp 72 · ${nudge}`);
-  assert.equal(voted(now - 60_000, "claude-fable-5-1"), `Derp 72 · ${nudge}`);
+  assert.equal(voted(now - 7300_000), `Derp ? · ${nudge}`);
+  assert.equal(voted(now - 60_000, "claude-fable-5-1"), `Derp ? · ${nudge}`);
   // Unknown cooldown: the server default of one hour.
   assert.equal(
     render(
@@ -406,8 +464,8 @@ test("vote nudge shows while this model can vote and hides after your vote", () 
     "Derp 72",
   );
   assert.equal(
-    render({ style: "minimal", nudge: false }, { nudge }),
-    "Derp 72",
+    render({ style: "minimal", nudge: false }, { nudge, localVotes: [] }),
+    "Derp ?",
   );
   // The "vote" field already says it; no duplicate.
   assert.equal(
@@ -416,8 +474,47 @@ test("vote nudge shows while this model can vote and hides after your vote", () 
       {
         nudge,
         voteStatus: { agents: [{ agent: "claude-code", nextVoteAt: null }] },
+        localVotes: [],
       },
     ),
-    "Derp 72 · vote now",
+    "Derp ? · vote now",
+  );
+});
+
+test("score shows only after your vote, until this model can vote again", () => {
+  const at = (prefs, localVotes) =>
+    renderStatusline({
+      cache,
+      model: "claude-opus-5-5",
+      prefs,
+      now,
+      localVotes,
+      voteStatus: { cooldownSeconds: 3600, agents: [] },
+    });
+  const fresh = votedFor("claude-opus-5-5");
+  const expired = [
+    { agent: "claude-code", model: "claude-opus-5-5", at: now - 3601_000 },
+  ];
+  // Before voting: no score, sample size or mood in any style.
+  assert.equal(at({ style: "compact" }, []), "Opus 5.5 · Derp ?");
+  assert.equal(at({ style: "bar" }, []), "Opus 5.5 ▕░░░░░░░░░░▏ ?");
+  assert.equal(at({ style: "mood" }, []), "(·_·) · Derp ? · Opus 5.5");
+  assert.equal(
+    at({ style: "minimal", fields: ["score", "samples", "scope"] }, []),
+    "Derp ? · shown after you vote",
+  );
+  assert.ok(!at(undefined, []).includes("72"));
+  assert.ok(!at(undefined, []).includes("n=140"));
+  // Within the cooldown of your vote: the score shows.
+  assert.equal(at({ style: "compact" }, fresh), "Opus 5.5 · Derp 72");
+  assert.equal(at(undefined, fresh), renderIndex(cache, "claude-opus-5-5"));
+  // Cooldown over: hidden again until the next vote.
+  assert.equal(at({ style: "compact" }, expired), "Opus 5.5 · Derp ?");
+  // Another agent's vote does not reveal Claude Code's score.
+  assert.equal(
+    at({ style: "compact" }, [
+      { agent: "codex", model: null, at: now - 60_000 },
+    ]),
+    "Opus 5.5 · Derp ?",
   );
 });

@@ -97,6 +97,13 @@ test("statusline never fetches or persists sessions; vote includes only explicit
     await run(["status"], env);
     await run(["status"], env);
     assert.equal(gets, 1);
+    // A recent vote of yours for this model reveals the cached score.
+    await writeFile(
+      join(env.DERPMETER_HOME, "local-votes.json"),
+      JSON.stringify([
+        { agent: "claude-code", model: "claude-opus-4", at: Date.now() },
+      ]),
+    );
     for (let i = 0; i < 3; i++) {
       const r = await run(
         ["statusline"],
@@ -228,6 +235,24 @@ test("statusline confirmation, composition and targeted restore preserve unrelat
     await writeFile(file, JSON.stringify(restored));
     assert.equal((await run(["uninstall-statusline", "--yes"], env)).code, 1);
     assert.equal((await run(["statusline"], env, "not-json")).code, 0);
+    // A previous statusline that runs derp again (a wrapper composed both
+    // ways) ends after one round instead of recursing.
+    await writeFile(file, JSON.stringify({ statusLine: prior }));
+    await run(["install-statusline", "--yes"], env);
+    const loop = JSON.parse(await readFile(recordPath, "utf8"));
+    const rounds = join(root, "rounds");
+    loop.previous.command = `printf x >> ${JSON.stringify(rounds)}; ${JSON.stringify(process.execPath)} ${JSON.stringify(cli)} statusline`;
+    await writeFile(recordPath, JSON.stringify(loop));
+    assert.equal((await run(["statusline"], env, "{}")).code, 0);
+    assert.equal(await readFile(rounds, "utf8"), "x");
+    // A prior statusline that hangs is stopped with everything it started.
+    const pidFile = join(root, "pid");
+    loop.previous.command = `sleep 30 & echo $! > ${JSON.stringify(pidFile)}; printf partial; wait`;
+    await writeFile(recordPath, JSON.stringify(loop));
+    const hung = await run(["statusline"], env, "{}");
+    assert.match(hung.out, /^partial\n/);
+    const sleeper = Number(await readFile(pidFile, "utf8"));
+    assert.throws(() => process.kill(sleeper, 0), { code: "ESRCH" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

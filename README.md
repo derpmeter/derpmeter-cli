@@ -5,7 +5,7 @@
 One package gives you:
 
 - the `derp` command,
-- a Claude Code **statusline** that shows the score for the model you're using and nudges you when you can vote,
+- a Claude Code **statusline** that shows the score for the model you're using after you vote on it, and nudges you when you can vote,
 - an **MCP server** so Claude Code or Codex can submit a vote you ask for.
 
 Agents: Claude Code, Codex and Antigravity. Node.js 22.13+, no runtime dependencies, MIT licensed.
@@ -35,7 +35,8 @@ There is nothing to sign up for. The first vote gets a random installation token
 ## Voting
 
 ```sh
-derp vote smart|meh|dumb [--agent claude-code|codex|antigravity] [--model <id>] [--reason <reason>]
+derp vote smart|meh|dumb [--agent claude-code|codex|antigravity] [--model <id>] [--reason <reason>] [--no-questions]
+derp details --vs-usual worse --task bugfix   # optional answers for your latest vote (24h)
 derp change meh            # change your latest vote for this agent (within 24h)
 derp cancel --agent codex  # cancel it; the cooldown still applies
 ```
@@ -44,6 +45,7 @@ derp cancel --agent codex  # cancel it; the cooldown still applies
 - **Reasons** (meh/dumb only): `instruction_failure`, `hallucination`, `repeated_mistake`, `poor_output`, `too_slow`, `other`. There is no free text.
 - **Cooldown:** one vote per agent and model per hour (`--model` omitted counts as its own model). Web, CLI, MCP and menu bar share a per-network limit, so extra tokens give no extra votes. `derp status` shows when you can vote next; a rejected vote says how long to wait.
 - A vote is a self-reported opinion. It never proves which model ran.
+- **Optional follow-up:** after a vote, three short multiple-choice questions, the same as on the website (compared with a usual day, task, session length, languages, what went well, how often you use it). In a terminal `derp vote` asks them and Enter skips; elsewhere it lists them, and `/derp` asks you in the chat. `derp details` sends only the answers you pick, tied to your latest vote for that agent. Answers never change the Derp Score; `--no-questions` turns the prompt off.
 
 ### Which model gets the vote
 
@@ -98,6 +100,10 @@ derp statusline-config --reset
 ```
 
 Fields: `model`, `score`, `samples`, `scope`, `flags`, `mood`, `bar`, `vote`. The `vote` field counts down to your next allowed Claude Code vote. Preferences live in `~/.derpmeter/config.json`.
+
+### Score after you vote
+
+The statusline shows the Derp Score only after you vote on Claude Code with the current model, and only until that model's cooldown ends. Before that it reads `Derp ?`, without the sample size or mood, so the number doesn't sway your vote. Your vote with `derp vote` or the MCP `derp_vote` reveals it; `derp cancel` hides it again. `derp status` still prints every score when you ask.
 
 ### Vote nudge
 
