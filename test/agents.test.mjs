@@ -370,3 +370,27 @@ test("Claude Code's own settings: full ids, suffixes and family aliases", () => 
   };
   assert.equal(resolveModel("claude-code", "opus", two), undefined);
 });
+
+test("catalog aliases pick the model, so a new model needs no release", () => {
+  const catalog = {
+    models: [
+      { id: "claude-fable-5-2", agent: "claude-code", aliases: ["fable"] },
+      { id: "claude-fable-5-1", agent: "claude-code" },
+      {
+        id: "claude-opus-5-5",
+        agent: "claude-code",
+        aliases: ["opus", "opusplan"],
+      },
+      { id: "claude-sonnet-5-5", agent: "claude-code", aliases: ["sonnet"] },
+      { id: "gpt-6.1-sol", agent: "codex" },
+    ],
+  };
+  const r = (raw, agent = "claude-code") => resolveModel(agent, raw, catalog);
+  assert.equal(r("fable"), "claude-fable-5-2", "two Fables, one alias");
+  assert.equal(r("claude-fable-5-1"), "claude-fable-5-1");
+  assert.equal(r("opusplan"), "claude-opus-5-5");
+  assert.equal(r("sonnet[1m]"), "claude-sonnet-5-5");
+  // With aliases served, no family guessing: haiku has none here.
+  assert.equal(r("haiku"), undefined);
+  assert.equal(r("opus", "codex"), undefined);
+});
