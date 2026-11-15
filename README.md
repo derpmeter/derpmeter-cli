@@ -59,6 +59,8 @@ derp cancel --agent codex  # cancel it; the cooldown still applies
 
 Nothing else is read from these files.
 
+**A detected model the catalog does not list yet.** The vote then carries no model, and `derp` sends the detected id separately as `unlistedModel` (for example `gpt-7-sol`) so DerpMeter learns a new model is in use and can add it. Only a lowercase id with a version number is sent, `[1m]` and date suffixes removed; family names such as `opus`, paths and free text never are, and nothing is sent when the catalog could not be read. The server counts it per day and agent only, apart from the vote, with no client, token or network attached, and deletes the counts after 90 days. `derp vote` prints a line when it sends one.
+
 ### Session-linked votes (opt-in)
 
 `derp privacy session on` asks for confirmation. The statusline then keeps `{model, effort, seenAt}` for Claude Code in `~/.derpmeter/observed.json` (effort is the level Claude Code reports, such as `high` or `xhigh`). The CLI never sends the effort level; the menu bar app may include it when it counts a broken Derp Smash CRT. A Claude Code vote within 15 minutes of an observation is flagged `sessionLinked`. No session ID, prompt, transcript, path or environment value is stored or sent. `derp privacy session off` turns it off and deletes the file.

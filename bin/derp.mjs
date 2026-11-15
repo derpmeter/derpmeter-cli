@@ -44,6 +44,7 @@ import {
   REASONS,
   configuredModel,
   resolveModel,
+  unlistedModel,
   freshObservation,
   recordObservation,
   clearObservations,
@@ -550,10 +551,16 @@ async function main() {
         const catalog = detected ? await refreshCatalog(c) : null;
         const resolved = resolveModel(agent, detected, catalog);
         if (resolved) model = resolved;
-        else if (detected)
+        else if (detected) {
+          const unlisted = unlistedModel(agent, detected, catalog);
+          if (unlisted) body.unlistedModel = unlisted;
           console.error(
-            `Detected model ${detected} is not in the DerpMeter catalog; voting without a model.`,
+            `Detected model ${detected} is not in the DerpMeter catalog; voting without a model.` +
+              (unlisted
+                ? " Its id is sent apart from the vote so DerpMeter can add it."
+                : ""),
           );
+        }
       }
       if (model) body.model = model;
       if (reason) body.failureReason = reason;

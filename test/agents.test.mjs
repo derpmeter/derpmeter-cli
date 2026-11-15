@@ -17,6 +17,7 @@ import {
   codexModel,
   geminiModel,
   resolveModel,
+  unlistedModel,
 } from "../lib/agents.mjs";
 const cli = resolve(new URL("../bin/derp.mjs", import.meta.url).pathname);
 function run(args, env, input = "") {
@@ -393,4 +394,32 @@ test("catalog aliases pick the model, so a new model needs no release", () => {
   // With aliases served, no family guessing: haiku has none here.
   assert.equal(r("haiku"), undefined);
   assert.equal(r("opus", "codex"), undefined);
+});
+
+test("an unlisted model is a versioned id the catalog does not match", () => {
+  const catalog = {
+    models: [
+      {
+        id: "gemini-4-hydrogen",
+        agent: "gemini-cli",
+        aliases: ["gemini-4-hydrogen-medium"],
+      },
+      { id: "claude-opus-5-5", agent: "claude-code", aliases: ["opus"] },
+    ],
+  };
+  const u = (agent, raw, c = catalog) => unlistedModel(agent, raw, c);
+  assert.equal(u("gemini-cli", "gemini-5-neon-medium"), "gemini-5-neon-medium");
+  assert.equal(u("claude-code", "Claude-Opus-5-6[1m]"), "claude-opus-5-6");
+  assert.equal(u("claude-code", "claude-opus-5-6-20261201"), "claude-opus-5-6");
+  // Listed or aliased: nothing to report.
+  assert.equal(u("gemini-cli", "gemini-4-hydrogen-medium"), undefined);
+  assert.equal(u("claude-code", "opus"), undefined);
+  // Families, words and anything that is not an id are never sent.
+  assert.equal(u("claude-code", "sonnet"), undefined);
+  assert.equal(u("claude-code", "default"), undefined);
+  assert.equal(u("codex", "../../etc/passwd1"), undefined);
+  assert.equal(u("codex", "my model 2"), undefined);
+  // Without the catalog nothing is known, so nothing is sent.
+  assert.equal(u("codex", "gpt-7", null), undefined);
+  assert.equal(u("codex", "gpt-7", { models: [] }), undefined);
 });
